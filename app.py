@@ -67,7 +67,7 @@ def extract_invoice_fields(text):
 
 
 # --- Streamlit App ---
-st.title("📄 AI Invoice Scanner (Freelance-Ready)")
+st.title("📄 AI Invoice Scanner (Freelance-Ready + Cloud-Safe)")
 st.write("Upload an invoice (PDF or image), extract details, and download results.")
 
 uploaded_file = st.file_uploader("Upload Invoice", type=["pdf", "png", "jpg", "jpeg"])
@@ -94,17 +94,26 @@ if uploaded_file:
         if not text.strip():
             st.warning("No embedded text found. Running OCR...")
             for img in images:
-                text += pytesseract.image_to_string(img)
+                try:
+                    text += pytesseract.image_to_string(img)
+                except Exception:
+                    st.error("⚠️ OCR not available here. Use PDF with embedded text or deploy with OCR API.")
+                    break
 
     else:
         # Handle image upload
         image = Image.open(file_path)
         st.image(image, caption="Uploaded Invoice", use_column_width=True)
-        text = pytesseract.image_to_string(image)
+
+        try:
+            text = pytesseract.image_to_string(image)
+        except Exception:
+            st.error("⚠️ OCR not available in this environment.")
+            text = ""
 
     # --- Display Results ---
     st.subheader("📝 Extracted Text")
-    st.text(text)
+    st.text(text if text else "⚠️ No text could be extracted.")
 
     fields = extract_invoice_fields(text)
 
