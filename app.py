@@ -15,115 +15,128 @@ Notes
   * macOS (Homebrew): brew install poppler
   * Linux (Debian/Ubuntu): sudo apt-get install poppler-utils
 
-Author: You + ChatGPT
+Author: Dawn
 """
 
 import streamlit as st
 import pytesseract
-import tensorflow as tf
-import numpy as np
-import os
-from PIL import Image
-from pdf2image import convert_from_path
+import fitz  # PyMuPDF
 import re
 import json
+import os
+import pandas as pd
+from datetime import datetime
+from PIL import Image
 
-# --- Config ---
-UPLOAD_DIR = "uploads"
-if not os.path.exists(UPLOAD_DIR):
-    os.makedirs(UPLOAD_DIR)
+# --- Ensure directories exist ---
+os.makedirs("uploads", exist_ok=True)
+os.makedirs("processed", exist_ok=True)
 
-# Path to Tesseract (Windows users must set this)
-# Uncomment and edit if needed:
-# pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-
-# --- Dummy TensorFlow model (for now just character count as placeholder) ---
-def build_dummy_model():
-    # Just a placeholder dense model
-    model = tf.keras.Sequential([
-        tf.keras.layers.Input(shape=(1,)),
-        tf.keras.layers.Dense(8, activation='relu'),
-        tf.keras.layers.Dense(1, activation='linear')
-    ])
-    model.compile(optimizer='adam', loss='mse')
-    return model
-
-model = build_dummy_model()
-
-# --- OCR Function ---
-def extract_text(file_path):
-    text = ""
-    if file_path.lower().endswith(".pdf"):
-        pages = convert_from_path(file_path)
-        for page in pages:
-            text += pytesseract.image_to_string(page)
-    else:
-        img = Image.open(file_path)
-        text = pytesseract.image_to_string(img)
-    return text
-
-# --- Extract structured invoice fields ---
+# --- Invoice field extraction function ---
 def extract_invoice_fields(text):
-    fields = {}
+    fields = {
+        "Invoice Number": None,
+        "Invoice Date": None,
+        "Total Amount": None,
+    }
 
-    # Invoice Number
-    invoice_no_match = re.search(r"(Invoice\s*(No\.?|#)\s*[:\-]?\s*(\w+))", text, re.IGNORECASE)
-    fields["Invoice Number"] = invoice_no_match.group(3) if invoice_no_match else "Not found"
+    # Invoice Number (e.g. Invoice #12345)
+    invoice_number_match = re.search(r"(Invoice\s*#?:?\s*)([A-Za-z0-9\-]+)", text, re.IGNORECASE)
 
-    # Date (matches formats like 2025-08-18, 18/08/2025, 08-18-2025)
-    date_match = re.search(r"(\d{2}[\/\-]\d{2}[\/\-]\d{4}|\d{4}[\/\-]\d{2}[\/\-]\d{2})", text)
-    fields["Date"] = date_match.group(0) if date_match else "Not found"
+    # Dates (DD-MM-YYYY, YYYY-MM-DD, DD/MM/YYYY, 18 Aug 2025, etc.)
+    date_match = re.search(
+        r"(\d{2}[/-]\d{2}[/-]\d{4}|\d{4}[/-]\d{2}[/-]\d{2}|\d{1,2}\s+\w+\s+\d{4})",
+        text
+    )
 
-    # Total Amount (matches e.g. Total: $123.45 or Amount Due 999.99)
-    total_match = re.search(r"(Total|Amount Due)[:\s]*\$?([\d,]+\.\d{2})", text, re.IGNORECASE)
-    fields["Total Amount"] = total_match.group(2) if total_match else "Not found"
+    # Totals (Total, Grand Total, Amount Due, Balance)
+    total_match = re.search(
+        r"(Total\s*Amount\s*:?|Grand\s*Total|Amount\s*Due|Balance)\s*\$?([\d,]+\.\d{2})",
+        text,
+        re.IGNORECASE
+    )
+
+    if invoice_number_match:
+        fields["Invoice Number"] = invoice_number_match.group(2)
+    if date_match:
+        fields["Invoice Date"] = date_match.group(1)
+    if total_match:
+        fields["Total Amount"] = total_match.group(2)
 
     return fields
 
-# --- Streamlit UI ---
-st.set_page_config(page_title="Invoice Scanner", page_icon="🧾", layout="wide")
-st.title("🧾 Invoice Scanner (TensorFlow + OCR)")
 
-uploaded_file = st.file_uploader("Upload an invoice (PDF or Image)", type=["pdf", "png", "jpg", "jpeg"])
+# --- Streamlit App ---
+st.title("📄 AI Invoice Scanner (Freelance-Ready)")
+st.write("Upload an invoice (PDF or image), extract details, and download results.")
 
-if uploaded_file is not None:
-    file_path = os.path.join(UPLOAD_DIR, uploaded_file.name)
+uploaded_file = st.file_uploader("Upload Invoice", type=["pdf", "png", "jpg", "jpeg"])
+
+if uploaded_file:
+    # Save uploaded file
+    file_path = os.path.join("uploads", uploaded_file.name)
     with open(file_path, "wb") as f:
         f.write(uploaded_file.getbuffer())
 
-    st.success(f"File uploaded: {uploaded_file.name}")
+    text = ""
+    images = []
 
-    with st.spinner("Extracting text with OCR..."):
-        extracted_text = extract_text(file_path)
-    
-    st.subheader("📄 Extracted Text")
-    st.text_area("OCR Output", extracted_text, height=300)
+    if uploaded_file.type == "application/pdf":
+        # Open PDF with PyMuPDF
+        doc = fitz.open(stream=open(file_path, "rb").read(), filetype="pdf")
+        for page in doc:
+            text += page.get_text("text")  # Extract text
+            pix = page.get_pixmap()
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            images.append(img)
 
-    # --- Dummy ML Prediction ---
-    length = len(extracted_text.split())
-    prediction = model.predict(np.array([[length]]))
+        # OCR fallback if no text
+        if not text.strip():
+            st.warning("No embedded text found. Running OCR...")
+            for img in images:
+                text += pytesseract.image_to_string(img)
 
-    st.subheader("🤖 ML Model Output")
-    st.write(f"Predicted Value (based on text length): {prediction[0][0]:.2f}")
+    else:
+        # Handle image upload
+        image = Image.open(file_path)
+        st.image(image, caption="Uploaded Invoice", use_column_width=True)
+        text = pytesseract.image_to_string(image)
 
-    # --- Extract invoice fields ---
-    fields = extract_invoice_fields(extracted_text)
+    # --- Display Results ---
+    st.subheader("📝 Extracted Text")
+    st.text(text)
 
-    st.subheader("📑 Extracted Fields")
-    st.write(fields)
+    fields = extract_invoice_fields(text)
 
-    # Download extracted text
+    st.subheader("📌 Extracted Fields")
+    st.json(fields)
+
+    # --- Save extracted fields ---
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    json_path = f"processed/invoice_{timestamp}.json"
+    csv_path = f"processed/invoice_{timestamp}.csv"
+
+    with open(json_path, "w") as f:
+        json.dump(fields, f, indent=2)
+
+    pd.DataFrame([fields]).to_csv(csv_path, index=False)
+
+    # --- Downloads ---
     st.download_button(
-        label="💾 Download Extracted Text",
-        data=extracted_text,
-        file_name="invoice_text.txt",
-        mime="text/plain"
-    )
-
-    # Download extracted fields as JSON
-    st.download_button(
-        label="💾 Download Extracted Fields (JSON)",
+        "💾 Download Extracted Fields (JSON)",
         data=json.dumps(fields, indent=2),
         file_name="invoice_fields.json",
-        mime="application/json"
+        mime="application/json",
     )
+
+    st.download_button(
+        "📊 Download Extracted Fields (CSV)",
+        data=pd.DataFrame([fields]).to_csv(index=False),
+        file_name="invoice_fields.csv",
+        mime="text/csv",
+    )
+
+    # --- Show Preview ---
+    if images:
+        st.subheader("🖼️ Invoice Preview")
+        st.image(images, caption=[f"Page {i+1}" for i in range(len(images))])

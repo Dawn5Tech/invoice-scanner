@@ -1,6 +1,5 @@
 streamlit
-pillow
 pytesseract
-pdf2image
-tensorflow
-numpy
+pillow
+PyMuPDF
+pandas
